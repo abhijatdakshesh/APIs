@@ -64,3 +64,58 @@ class UserTable(models.Model):
                 self.save()
                 return True
         return False
+
+# Task Management Models (moved from tasks app)
+class Task(models.Model):
+    PRIORITY_CHOICES = [
+        ('high', 'High'),
+        ('medium', 'Medium'),
+        ('low', 'Low'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+        ('overdue', 'Overdue'),
+    ]
+    title = models.CharField(max_length=200)
+    description = models.TextField()
+    assignee = models.ForeignKey('UserTable', on_delete=models.CASCADE, related_name='assigned_tasks')
+    assigner = models.ForeignKey('UserTable', on_delete=models.CASCADE, related_name='created_tasks', null=True, blank=True)
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='medium')
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='pending')
+    created_date = models.DateTimeField(auto_now_add=True)
+    due_date = models.DateTimeField()
+    completed_date = models.DateTimeField(null=True, blank=True)
+    location = models.CharField(max_length=255, null=True, blank=True)
+    tags = models.JSONField(null=True, blank=True)
+    def __str__(self):
+        return self.title
+    def is_overdue(self):
+        if self.status != 'completed' and self.due_date < timezone.now():
+            return True
+        return False
+    def mark_as_completed(self):
+        self.status = 'completed'
+        self.completed_date = timezone.now()
+        self.save()
+    def save(self, *args, **kwargs):
+        if self.is_overdue():
+            self.status = 'overdue'
+        super().save(*args, **kwargs)
+
+class TaskSubmission(models.Model):
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='submissions')
+    submitted_by = models.ForeignKey('UserTable', on_delete=models.CASCADE)
+    submission_date = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(null=True, blank=True)
+    def __str__(self):
+        return f"Submission for {self.task.title}"
+
+class TaskDocument(models.Model):
+    submission = models.ForeignKey(TaskSubmission, on_delete=models.CASCADE, related_name='documents')
+    document = models.FileField(upload_to='task_documents/')
+    document_type = models.CharField(max_length=100, null=True, blank=True)
+    upload_date = models.DateTimeField(auto_now_add=True)
+    def __str__(self):
+        return f"Document for {self.submission.task.title}"
