@@ -211,3 +211,123 @@ class OTPVerifyView(APIView):
                 )
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+# Task Management Views (moved from tasks app)
+from rest_framework import viewsets, generics, status, filters
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.utils import timezone
+from datetime import timedelta
+from django.db.models import Q
+from .models import Task, TaskSubmission, TaskDocument, UserTable
+from .serializers import TaskSerializer, TaskSubmissionSerializer, TaskDocumentSerializer, TaskCalendarSerializer
+
+class TaskViewSet(viewsets.ModelViewSet):
+    serializer_class = TaskSerializer
+    queryset = Task.objects.all()
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['title', 'description', 'tags']
+    ordering_fields = ['due_date', 'priority', 'created_date', 'status']
+    ordering = ['due_date']
+    def get_queryset(self):
+        queryset = Task.objects.all()
+        assignee_id = self.request.query_params.get('assignee')
+        status = self.request.query_params.get('status')
+        priority = self.request.query_params.get('priority')
+        due_category = self.request.query_params.get('due_category')
+        if assignee_id:
+            queryset = queryset.filter(assignee_id=assignee_id)
+        if status:
+            queryset = queryset.filter(status=status)
+        if priority:
+            queryset = queryset.filter(priority=priority)
+        if due_category:
+            now = timezone.now()
+            today_end = now.replace(hour=23, minute=59, second=59)
+            week_end = now + timedelta(days=(6 - now.weekday()))
+            week_end = week_end.replace(hour=23, minute=59, second=59)
+            if due_category == 'due_today':
+                queryset = queryset.filter(due_date__lte=today_end)
+            elif due_category == 'due_this_week':
+                queryset = queryset.filter(due_date__gt=today_end, due_date__lte=week_end)
+            elif due_category == 'upcoming':
+                queryset = queryset.filter(due_date__gt=week_end)
+        return queryset
+
+class UserTasksView(generics.ListAPIView):
+    serializer_class = TaskSerializer
+    def get_queryset(self):
+        username = self.kwargs.get('username')
+        user = get_object_or_404(UserTable, username=username)
+        return Task.objects.filter(assignee=user).order_by('due_date')
+
+class TaskSubmissionView(generics.CreateAPIView):
+    serializer_class = TaskSubmissionSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    def post(self, request, *args, **kwargs):
+        task_id = request.data.get('task')
+        try:
+            task = Task.objects.get(id=task_id)
+            if task.status == 'completed':
+                return Response({"error": "This task has already been completed"}, status=status.HTTP_400_BAD_REQUEST)
+        except Task.DoesNotExist:
+            return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+        return super().post(request, *args, **kwargs)
+
+class TaskboardView(APIView):
+    def get(self, request):
+        assignee_id = request.query_params.get('assignee')
+        if not assignee_id:
+            return Response({"error": "Assignee parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = UserTable.objects.get(id=assignee_id)
+        except UserTable.DoesNotExist:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        now = timezone.now()
+        today_end = now.replace(hour=23, minute=59, second=59)
+        week_end = now + timedelta(days=(6 - now.weekday()))
+        week_end = week_end.replace(hour=23, minute=59, second=59)
+        tasks_due_today = Task.objects.filter(assignee=user, due_date__lte=today_end, status__in=['pending', 'in_progress', 'overdue']).order_by('due_date')
+        tasks_due_this_week = Task.objects.filter(assignee=user, due_date__gt=today_end, due_date__lte=week_end, status__in=['pending', 'in_progress']).order_by('due_date')
+        upcoming_tasks = Task.objects.filter(assignee=user, due_date__gt=week_end, status__in=['pending', 'in_progress']).order_by('due_date')
+        completed_tasks = Task.objects.filter(assignee=user, status='completed').order_by('-completed_date')[:10]
+        serializer_today = TaskSerializer(tasks_due_today, many=True)
+        serializer_this_week = TaskSerializer(tasks_due_this_week, many=True)
+        serializer_upcoming = TaskSerializer(upcoming_tasks, many=True)
+        serializer_completed = TaskSerializer(completed_tasks, many=True)
+        return Response({
+            "due_today": serializer_today.data,
+            "due_this_week": serializer_this_week.data,
+            "upcoming": serializer_upcoming.data,
+            "completed": serializer_completed.data
+        })
+
+class TaskCalendarView(APIView):
+    def get(self, request):
+        assignee_id = request.query_params.get('assignee')
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        if not assignee_id:
+            return Response({"error": "Assignee parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            user = UserTable.objects.get(id=assignee_id)
+        except UserTable.DoesNotExist:
+            return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        tasks_query = Task.objects.filter(assignee=user)
+        if year and month:
+            try:
+                year = int(year)
+                month = int(month)
+                tasks_query = tasks_query.filter(due_date__year=year, due_date__month=month)
+            except ValueError:
+                return Response({"error": "Invalid year or month format"}, status=status.HTTP_400_BAD_REQUEST)
+        tasks = tasks_query.order_by('due_date')
+        serializer = TaskCalendarSerializer(tasks, many=True)
+        calendar_data = {}
+        for task in serializer.data:
+            due_date = task['due_date'].split('T')[0]
+            if due_date not in calendar_data:
+                calendar_data[due_date] = []
+            calendar_data[due_date].append(task)
+        return Response(calendar_data)
