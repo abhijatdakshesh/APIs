@@ -19,11 +19,18 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from .views import home
+from rest_framework import routers
+from cases.views import CaseViewSet, VisitViewSet
+
+router = routers.DefaultRouter()
+router.register(r'cases', CaseViewSet)
+router.register(r'visits', VisitViewSet)
 
 urlpatterns = [
     path('', home, name='home'),
     path('admin/', admin.site.urls),
     path('api/users/', include('users.urls')),
+    path('api/', include(router.urls)),
 ]
 
 # Add media files URL pattern in development
